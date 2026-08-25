@@ -111,9 +111,9 @@ fn draw(f: &mut Frame, app: &mut App) {
 fn draw_header(f: &mut Frame, area: Rect) {
     let style = Style::default().fg(Color::LightRed);
     let lines = vec![
-        Line::raw(format!("{:36}Eliza", "")),
-        Line::raw(format!("{:30}Creative Computing", "")),
-        Line::raw(format!("{:28}Morristown, New Jersey", "")),
+        Line::raw(" ".repeat(36) + "Eliza"),
+        Line::raw(" ".repeat(30) + "Creative Computing"),
+        Line::raw(" ".repeat(28) + "Morristown, New Jersey"),
     ];
     f.render_widget(Paragraph::new(lines).style(style).block(Block::default()), area);
 }
@@ -134,16 +134,14 @@ fn draw_chat(f: &mut Frame, area: Rect, log: &[(String, Color)]) {
 
 fn wrap(text: &str, width: usize, out: &mut Vec<Line>, color: Color) {
     let style = Style::default().fg(color);
-    let mut i = 0;
-    while i < text.len() {
-        let end = (i + width).min(text.len());
-        // split on char boundary
-        let mut end = end;
-        while end > i && !text.is_char_boundary(end) {
+    let mut start = 0;
+    while start < text.len() {
+        let mut end = (start + width).min(text.len());
+        while end > start && !text.is_char_boundary(end) {
             end -= 1;
         }
-        out.push(Line::from(Span::styled(text[i..end].to_string(), style)));
-        i = end;
+        out.push(Line::from(Span::styled(text[start..end].to_string(), style)));
+        start = end;
     }
 }
 
@@ -155,7 +153,6 @@ fn draw_input(f: &mut Frame, area: Rect, input: &str, cursor: usize) {
         Span::styled(input, style),
     ]);
     let cols = area.x + "? ".len() as u16 + cursor as u16;
-    let rows = area.y;
-    f.set_cursor_position((cols, rows));
+    f.set_cursor_position((cols, area.y));
     f.render_widget(Paragraph::new(line).style(style), area);
 }

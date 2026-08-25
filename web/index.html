@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eliza</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: system-ui, sans-serif;
+    background: #111; color: #eee;
+    display: flex; flex-direction: column;
+  }
+  header {
+    color: #ff6b6b; text-align: center;
+    padding: 8px 0; line-height: 1.35;
+    border-bottom: 1px solid #333;
+  }
+  header .tagline { font-size: 0.8em; opacity: 0.8; }
+  #chat {
+    flex: 1; overflow-y: auto;
+    display: flex; flex-direction: column;
+    gap: 8px; padding: 12px;
+  }
+  .msg { max-width: 75%; padding: 8px 12px; border-radius: 12px; white-space: pre-wrap; }
+  .eliza { background: #262626; align-self: flex-start; }
+  .user  { background: #1d5c2f; align-self: flex-end; }
+  .note  { color: #888; font-size: 0.85em; text-align: center; }
+  footer {
+    display: flex; gap: 8px; padding: 10px;
+    border-top: 1px solid #333;
+  }
+  input {
+    flex: 1; padding: 9px 12px; border-radius: 8px;
+    border: 1px solid #444; background: #1a1a1a; color: #eee; font-size: 1em;
+  }
+  button {
+    padding: 9px 18px; border: 0; border-radius: 8px;
+    background: #2f9e5f; color: #fff; font-size: 1em; cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; cursor: default; }
+</style>
+</head>
+<body>
+<header>
+  <div>Eliza</div>
+  <div class="tagline">Creative Computing · Morristown, New Jersey</div>
+</header>
+<main id="chat"></main>
+<footer>
+  <input id="input" placeholder="What's your problem?" autocomplete="off">
+  <button id="send">Send</button>
+</footer>
+<script>
+const chat = document.getElementById('chat');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+
+let eliza = null, wasm = null;
+
+async function init() {
+  try {
+    const { instance } = await WebAssembly.instantiateStreaming(fetch('eliza.wasm'));
+    wasm = instance.exports;
+    eliza = wasm.eliza_new();
+    say('eliza', "Hi!  I'm Eliza.  What's your problem?");
+  } catch (e) {
+    say('eliza', 'Could not load eliza.wasm: ' + e + '\n\nServe this folder over HTTP (e.g. python3 -m http.server), not file://.');
+  }
+}
+
+function say(who, text) {
+  const row = document.createElement('div');
+  row.className = 'msg ' + who;
+  row.textContent = text;
+  chat.appendChild(row);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function respond(text) {
+  const bytes = new TextEncoder().encode(text);
+  const inPtr = wasm.eliza_alloc(bytes.length);
+  new Uint8Array(wasm.memory.buffer, inPtr, bytes.length).set(bytes);
+  const outCap = bytes.length + 512; // reply = template + remainder of input
+  const outPtr = wasm.eliza_alloc(outCap);
+  const n = wasm.eliza_respond(eliza, inPtr, bytes.length, outPtr, outCap);
+  const reply = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, outPtr, n));
+  wasm.eliza_dealloc(inPtr, bytes.length);
+  wasm.eliza_dealloc(outPtr, outCap);
+  return reply;
+}
+
+function send() {
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  say('user', text);
+  const reply = respond(text);
+  say('eliza', reply);
+  if (reply === 'Shut up...') {
+    input.disabled = sendBtn.disabled = true;
+    const restart = document.createElement('button');
+    restart.textContent = 'Start over';
+    restart.onclick = () => {
+      wasm.eliza_free(eliza);
+      eliza = wasm.eliza_new();
+      chat.textContent = '';
+      input.disabled = sendBtn.disabled = false;
+      say('eliza', "Hi!  I'm Eliza.  What's your problem?");
+      input.focus();
+    };
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.appendChild(restart);
+    chat.appendChild(note);
+    chat.scrollTop = chat.scrollHeight;
+  } else {
+    input.focus();
+  }
+}
+
+sendBtn.onclick = send;
+input.addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+init();
+</script>
+</body>
+</html>

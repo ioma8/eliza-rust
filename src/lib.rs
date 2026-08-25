@@ -1,17 +1,16 @@
-//! Eliza engine — a faithful byte-for-byte port of the classic
-//! Creative Computing ELIZA (modern.bas, GW-BASIC).
+//! Eliza engine — a faithful port of the classic Creative Computing ELIZA
+//! (modern.bas, GW-BASIC).
 //!
-//! Every data table and every control-flow quirk of the original BASIC
-//! program is reproduced here exactly:
+//! Every control-flow quirk of the original program is reproduced exactly:
 //!   * I$ = " " + input + "  ", apostrophe stripping with recheck
 //!   * "SHUT"/"shut" (case-sensitive) detection inside that same loop
-//!   * IU$ uppercase mirror (IL$ is built but never used in the BASIC)
+//!   * uppercase mirror IU$ for keyword matching, original case for output
 //!   * repeat check against the previous processed input P$
 //!   * keyword scan: first keyword in priority order, LAST occurrence position
 //!   * conjugation pairs applied as one forward pass per pair, with the
 //!     BASIC `L = L + LEN(R$)` + `NEXT L` (+1) skip
 //!   * FOR-loop limits captured once at loop entry (GW-BASIC semantics)
-//!   * reply selection: per-keyword round-robin pointer R(K) over S(K)..N(K)
+//!   * per-keyword round-robin replies over S(K)..N(K)
 //!   * "*"-suffixed replies append the conjugated remainder lowercased
 
 pub enum Outcome {
@@ -30,7 +29,7 @@ const KEYWORDS: [&str; 36] = [
     "COMPUTER", "NOKEYFOUND",
 ];
 
-// 14 (from, to) conjugation pairs, exactly as READ by lines 440-550.
+// 14 (from, to) conjugation pairs, exactly as READ by BASIC lines 440-550.
 const CONJ: [(&str, &str); 14] = [
     (" ARE ", " am "),
     (" AM ", " are "),
@@ -163,7 +162,8 @@ const REPLIES: [&str; 112] = [
     "That is quite interesting.",
 ];
 
-// (start reply, count) per keyword, from DATA lines 2530-2560.
+// (start reply, count) per keyword, from DATA lines 2530-2560. Reply numbers
+// are 1-based; keyword indices are 1-based, matching the BASIC's K.
 const INDEX: [(usize, usize); 36] = [
     (1, 3), (4, 2), (6, 4), (6, 4), (10, 4), (14, 3), (17, 3), (20, 2), (22, 3), (25, 3),
     (28, 4), (28, 4), (32, 3), (35, 5), (40, 9), (40, 9), (40, 9), (40, 9), (40, 9), (40, 9),
@@ -171,169 +171,175 @@ const INDEX: [(usize, usize); 36] = [
     (80, 3), (83, 7), (90, 3), (93, 6), (99, 7), (106, 6),
 ];
 
+/// One keyword's reply range: the BASIC's S(K)..N(K) plus the round-robin
+/// pointer R(K) that walks first..last and wraps.
+struct ReplyRange {
+    first: usize,
+    last: usize,
+    next: usize,
+}
+
 pub struct Eliza {
     /// P$ — the previous processed input (with spaces, apostrophes stripped).
     prev: Vec<u8>,
-    /// R(K) — round-robin reply pointer (1-based reply number) per keyword.
-    ptr: [usize; 36],
-    /// S(K) — first reply number per keyword.
-    start: [usize; 36],
-    /// N(K) — last reply number per keyword.
-    end: [usize; 36],
+    /// Per-keyword rotating reply range (BASIC arrays S/R/N).
+    replies: [ReplyRange; 36],
+}
+
+impl Default for Eliza {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Eliza {
     pub fn new() -> Self {
-        let mut start = [0; 36];
-        let mut end = [0; 36];
-        let mut ptr = [0; 36];
-        for (i, &(s, count)) in INDEX.iter().enumerate() {
-            start[i] = s;
-            end[i] = s + count - 1;
-            ptr[i] = s;
+        Eliza {
+            prev: Vec::new(),
+            replies: INDEX.map(|(first, count)| ReplyRange {
+                first,
+                last: first + count - 1,
+                next: first,
+            }),
         }
-        Eliza { prev: Vec::new(), ptr, start, end }
     }
 
     /// One conversation turn. Mirrors BASIC lines 200-640.
     pub fn respond(&mut self, input: &str) -> Outcome {
-        // line 201: I$ = " " + I$ + "  "
-        let mut i: Vec<u8> = Vec::with_capacity(input.len() + 3);
-        i.push(b' ');
-        i.extend_from_slice(input.as_bytes());
-        i.push(b' ');
-        i.push(b' ');
-
-        // lines 220-250: apostrophe removal + SHUT check.
-        // FOR L = 1 TO LEN(I$) — limit captured once at entry (GW-BASIC).
-        let limit = i.len();
-        let mut l = 1usize;
-        while l <= limit {
-            // line 230: drop apostrophe at L, then GOTO 230 (recheck same L)
-            while l <= i.len() && i[l - 1] == b'\'' {
-                i.remove(l - 1);
-            }
-            // line 240: case-sensitive SHUT check
-            if l + 4 <= i.len() {
-                let w = &i[l - 1..l + 3];
-                if w == b"SHUT" || w == b"shut" {
-                    return Outcome::ShutUp;
-                }
-            }
-            l += 1;
-        }
-
-        // lines 251-255: IU$ (uppercase mirror). IL$ is built but never used.
-        let mut iu: Vec<u8> = Vec::with_capacity(i.len());
-        for &c in &i {
-            if (b'a'..=b'z').contains(&c) {
-                iu.push(c - 32);
-            } else if (b'A'..=b'Z').contains(&c) {
-                iu.push(c);
-            } else {
-                iu.push(c);
-            }
-        }
-
-        // line 256: repeat check
+        let Some(i) = preprocess(input) else {
+            return Outcome::ShutUp;
+        };
+        let iu = uppercase(&i);
         if i == self.prev {
             return Outcome::Say("Please don't repeat yourself!".to_string());
         }
+        // lines 365/370: K = matched keyword, or 36 when none found.
+        let (k, c) = match find_keyword(&iu) {
+            Some((k, t, f)) => (k, conjugate(&i, t, f)),
+            None => (36, Vec::new()),
+        };
+        self.reply(k, &i, &c)
+    }
 
-        // lines 290-365: find keyword. First keyword (in priority order) that
-        // occurs anywhere wins; its LAST occurrence position is kept (the
-        // inner loop keeps overwriting T/F$ on every match).
-        let mut s = 0usize; // 0 = none found
-        let mut t = 0usize; // 1-based position in IU$
-        let mut f: &[u8] = &[];
-        for (k, kw) in KEYWORDS.iter().enumerate() {
-            if s > 0 {
-                continue; // line 315: already found, skip search
-            }
-            // FOR L = 1 TO LEN(IU$) - LEN(K$) + 1
-            let bound = iu.len().saturating_sub(kw.len()) + 1;
-            for l in 1..=bound {
-                if l + kw.len() - 1 <= iu.len() && &iu[l - 1..l - 1 + kw.len()] == kw.as_bytes() {
-                    s = k + 1;
-                    t = l;
-                    f = kw.as_bytes();
-                }
-            }
+    /// Lines 590-640: take reply number `range.next`, rotate the pointer,
+    /// and append the conjugated remainder lowercased when the reply ends
+    /// with "*".
+    fn reply(&mut self, k: usize, i: &[u8], c: &[u8]) -> Outcome {
+        let range = &mut self.replies[k - 1];
+        let f = REPLIES[range.next - 1];
+        range.next += 1;
+        if range.next > range.last {
+            range.next = range.first;
         }
-        // line 365/370: K = S (found) or K = 36 (no keyword found)
-        let k = if s > 0 { s } else { 36 };
-
-        // lines 390-558: conjugate the remainder — only when a keyword matched.
-        let mut c: Vec<u8> = Vec::new();
-        if s > 0 {
-            // line 430: C$ = " " + RIGHT$(I$, LEN(IU$) - LEN(F$) - L + 1) + " "
-            let right = iu.len() - f.len() - t + 1;
-            c.push(b' ');
-            c.extend_from_slice(&i[i.len() - right..]);
-            c.push(b' ');
-
-            // lines 440-550: one forward pass per pair, limit captured per pair.
-            for &(sp, rp) in CONJ.iter() {
-                let limit = c.len();
-                let mut l = 1usize;
-                while l <= limit {
-                    // lines 470-500: match S$ -> replace with R$
-                    if l + sp.len() <= c.len() && &c[l - 1..l - 1 + sp.len()] == sp.as_bytes() {
-                        c.splice(l - 1..l - 1 + sp.len(), rp.bytes());
-                        // line 495 L = L + LEN(R$); line 540 NEXT L adds 1
-                        l += rp.len() + 1;
-                        continue;
-                    }
-                    // lines 510-535: match R$ -> replace with S$
-                    if l + rp.len() <= c.len() && &c[l - 1..l - 1 + rp.len()] == rp.as_bytes() {
-                        c.splice(l - 1..l - 1 + rp.len(), sp.bytes());
-                        l += sp.len() + 1;
-                        continue;
-                    }
-                    l += 1;
-                }
+        self.prev = i.to_vec();
+        match f.strip_suffix('*') {
+            Some(stem) => {
+                let mut out: Vec<u8> = Vec::with_capacity(stem.len() + c.len());
+                out.extend_from_slice(stem.as_bytes());
+                out.extend(c.iter().map(|&ch| ch.to_ascii_lowercase()));
+                Outcome::Say(String::from_utf8_lossy(&out).into_owned())
             }
-
-            // line 555: collapse double leading space
-            if c.get(1) == Some(&b' ') {
-                c.remove(0);
-            }
-            // lines 556-558: drop all '!' (recheck same position after removal)
-            let limit = c.len();
-            let mut l = 1usize;
-            while l <= limit {
-                if l <= c.len() && c[l - 1] == b'!' {
-                    c.remove(l - 1);
-                    continue;
-                }
-                l += 1;
-            }
-        }
-
-        // lines 590-610: F$ = reply R(K), then rotate the pointer.
-        let f = REPLIES[self.ptr[k - 1] - 1];
-        self.ptr[k - 1] += 1;
-        if self.ptr[k - 1] > self.end[k - 1] {
-            self.ptr[k - 1] = self.start[k - 1];
-        }
-
-        // lines 620-640: plain reply, or reply + lowercased remainder.
-        self.prev = i;
-        if let Some(stripped) = f.strip_suffix('*') {
-            let mut out: Vec<u8> = Vec::with_capacity(stripped.len() + c.len());
-            out.extend_from_slice(stripped.as_bytes());
-            for &ch in &c {
-                if (b'A'..=b'Z').contains(&ch) {
-                    out.push(ch + 32);
-                } else {
-                    out.push(ch);
-                }
-            }
-            Outcome::Say(String::from_utf8_lossy(&out).into_owned())
-        } else {
-            Outcome::Say(f.to_string())
+            None => Outcome::Say(f.to_string()),
         }
     }
+}
+
+/// Lines 201-250: I$ = " " + input + "  ", all apostrophes dropped.
+/// Returns None when the input contains "SHUT" or "shut".
+fn preprocess(input: &str) -> Option<Vec<u8>> {
+    let mut i: Vec<u8> = Vec::with_capacity(input.len() + 3);
+    i.push(b' ');
+    i.extend_from_slice(input.as_bytes());
+    i.extend_from_slice(b"  ");
+
+    // FOR L = 1 TO LEN(I$) — the limit is fixed at loop entry (GW-BASIC).
+    let limit = i.len();
+    let mut l = 0;
+    while l < limit {
+        // line 230: drop the apostrophe, then GOTO 230 (recheck same position)
+        while l < i.len() && i[l] == b'\'' {
+            i.remove(l);
+        }
+        // line 240: case-sensitive SHUT check
+        if l + 4 <= i.len() && (&i[l..l + 4] == b"SHUT" || &i[l..l + 4] == b"shut") {
+            return None;
+        }
+        l += 1;
+    }
+    Some(i)
+}
+
+/// Lines 251-255: IU$ — byte-wise ASCII uppercase mirror.
+fn uppercase(i: &[u8]) -> Vec<u8> {
+    i.iter().map(|&c| c.to_ascii_uppercase()).collect()
+}
+
+/// Lines 290-365: the first keyword (in priority order) that occurs anywhere
+/// wins; its LAST occurrence position is kept, because the inner loop keeps
+/// overwriting the match on every hit. Returns (1-based K, 0-based position,
+/// keyword), or None when no keyword matches.
+fn find_keyword(iu: &[u8]) -> Option<(usize, usize, &'static [u8])> {
+    let mut found = None;
+    for (k, kw) in KEYWORDS.iter().enumerate() {
+        if found.is_some() {
+            break; // line 315: already matched, stop searching
+        }
+        // FOR L = 1 TO LEN(IU$) - LEN(K$) + 1
+        let limit = iu.len().saturating_sub(kw.len());
+        for l in 0..=limit {
+            if l + kw.len() <= iu.len() && &iu[l..l + kw.len()] == kw.as_bytes() {
+                found = Some((k + 1, l, kw.as_bytes()));
+            }
+        }
+    }
+    found
+}
+
+/// Lines 390-558: conjugate the text after the keyword, exactly as the BASIC
+/// does: one forward pass per pair, with the `L = L + LEN(R$)` + `NEXT L`
+/// (+1) skip, per-pair loop limits, leading-space collapse, and "!" removal.
+fn conjugate(i: &[u8], t: usize, f: &[u8]) -> Vec<u8> {
+    // line 430: C$ = " " + (I$ after the keyword) + " "
+    let mut c = Vec::new();
+    c.push(b' ');
+    c.extend_from_slice(&i[t + f.len()..]);
+    c.push(b' ');
+
+    for &(sp, rp) in &CONJ {
+        let limit = c.len(); // FOR L = 1 TO LEN(C$) — fixed per pair
+        let mut l = 0;
+        while l < limit {
+            // lines 470-500: match S$ -> replace with R$
+            if l + sp.len() <= c.len() && &c[l..l + sp.len()] == sp.as_bytes() {
+                c.splice(l..l + sp.len(), rp.bytes());
+                l += rp.len() + 1; // line 495 + NEXT L's +1
+                continue;
+            }
+            // lines 510-535: match R$ -> replace with S$
+            if l + rp.len() <= c.len() && &c[l..l + rp.len()] == rp.as_bytes() {
+                c.splice(l..l + rp.len(), sp.bytes());
+                l += sp.len() + 1;
+                continue;
+            }
+            l += 1;
+        }
+    }
+
+    // line 555: at most one leading space
+    if c.get(1) == Some(&b' ') {
+        c.remove(0);
+    }
+    // lines 556-558: drop the "!" markers
+    let limit = c.len();
+    let mut l = 0;
+    while l < limit {
+        if l < c.len() && c[l] == b'!' {
+            c.remove(l);
+            continue;
+        }
+        l += 1;
+    }
+    c
 }
 
 #[cfg(test)]
@@ -442,5 +448,68 @@ mod tests {
         let mut e = Eliza::new();
         // "YOU ARE" (priority 3) beats "YOU " (priority 13)
         assert_eq!(say(&mut e, "you are"), "What makes you think I am");
+    }
+}
+
+/// C-ABI bridge for the wasm build (see web/). Compiled only for wasm32.
+#[cfg(target_arch = "wasm32")]
+mod wasm {
+    use super::{Eliza, Outcome};
+    use std::alloc::{alloc, dealloc, Layout};
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn eliza_new() -> *mut Eliza {
+        Box::into_raw(Box::new(Eliza::new()))
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn eliza_free(e: *mut Eliza) {
+        if !e.is_null() {
+            unsafe { drop(Box::from_raw(e)) }
+        }
+    }
+
+    /// Buffer JS writes the input into / reads the reply from.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn eliza_alloc(len: usize) -> *mut u8 {
+        if len == 0 {
+            return std::ptr::null_mut();
+        }
+        unsafe { alloc(Layout::array::<u8>(len).unwrap()) }
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn eliza_dealloc(p: *mut u8, len: usize) {
+        if !p.is_null() {
+            unsafe { dealloc(p, Layout::array::<u8>(len).unwrap()) }
+        }
+    }
+
+    /// Runs one conversation turn. Input bytes are read from `input`; the
+    /// reply is written into `out` (truncated to `out_cap`); the byte length
+    /// written is returned. "SHUT"/"shut" replies "Shut up...".
+    #[unsafe(no_mangle)]
+    pub extern "C" fn eliza_respond(
+        e: *mut Eliza,
+        input: *const u8,
+        input_len: usize,
+        out: *mut u8,
+        out_cap: usize,
+    ) -> usize {
+        if e.is_null() || input.is_null() || out.is_null() {
+            return 0;
+        }
+        let input = unsafe { std::slice::from_raw_parts(input, input_len) };
+        let input = String::from_utf8_lossy(input);
+        let reply = match unsafe { &mut *e }.respond(&input) {
+            Outcome::Say(s) => s,
+            Outcome::ShutUp => "Shut up...".to_string(),
+        };
+        let bytes = reply.as_bytes();
+        let n = bytes.len().min(out_cap);
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, n);
+        }
+        n
     }
 }
