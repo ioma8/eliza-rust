@@ -40,6 +40,10 @@
     background: #2f9e5f; color: #fff; font-size: 1em; cursor: pointer;
   }
   button:disabled { opacity: 0.4; cursor: default; }
+  .credit {
+    font-size: 0.72em; color: #666; text-align: center;
+    padding: 5px 10px; border-top: 1px solid #222;
+  }
 </style>
 </head>
 <body>
@@ -52,6 +56,11 @@
   <input id="input" placeholder="What's your problem?" autocomplete="off">
   <button id="send">Send</button>
 </footer>
+<div class="credit">
+  ELIZA was created by Joseph Weizenbaum (MIT, 1966). This page runs a Rust port of
+  the BASIC version published by Creative Computing (Morristown, New Jersey) —
+  Jeff Shrager's <code>modern.bas</code> — compiled to WebAssembly.
+</div>
 <script>
 const chat = document.getElementById('chat');
 const input = document.getElementById('input');
