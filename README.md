@@ -1,8 +1,12 @@
 # Eliza
 
-A Rust TUI reimplementation of the classic Creative Computing **ELIZA** program
+A Rust reimplementation of the classic Creative Computing **ELIZA** program
 (`modern.bas`), with exactly the same conversational logic as the original
-GW-BASIC source.
+GW-BASIC source. The original listing is archived at
+[archive.org/details/eliza.qb64](https://archive.org/details/eliza.qb64).
+
+Ships three front ends for the same engine: a ratatui TUI, a WASM web chat
+page, and a headless CLI.
 
 ## Run
 
