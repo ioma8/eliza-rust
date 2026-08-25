@@ -24,12 +24,14 @@ printf 'hello\ni am sad\nshut up\n' | cargo run --example cli   # headless mode
 
 ## Web (WASM)
 
+Live chat page: **https://ioma8.github.io/eliza-rust/** (served from `docs/` on master via GitHub Pages).
+
 The same engine runs in the browser via WebAssembly (`docs/`):
 
 ```bash
 cargo build --target wasm32-unknown-unknown --release --lib
 cp target/wasm32-unknown-unknown/release/eliza.wasm docs/
-cd web && python3 -m http.server
+cd docs && python3 -m http.server
 # open http://localhost:8000
 ```
 
