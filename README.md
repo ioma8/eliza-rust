@@ -24,11 +24,11 @@ printf 'hello\ni am sad\nshut up\n' | cargo run --example cli   # headless mode
 
 ## Web (WASM)
 
-The same engine runs in the browser via WebAssembly (`web/`):
+The same engine runs in the browser via WebAssembly (`docs/`):
 
 ```bash
 cargo build --target wasm32-unknown-unknown --release --lib
-cp target/wasm32-unknown-unknown/release/eliza.wasm web/
+cp target/wasm32-unknown-unknown/release/eliza.wasm docs/
 cd web && python3 -m http.server
 # open http://localhost:8000
 ```
@@ -46,5 +46,5 @@ Serve over HTTP — the browser refuses to load WebAssembly from `file://`.
   `TAB(37/31/29)` offsets, green input line, white Eliza text.
 - `examples/cli.rs` — stdin→stdout mode for scripting and diffing against the
   original interpreter.
-- `web/` — single-page chat (HTML/CSS/JS) driving the engine over WASM.
+- `docs/` — single-page chat (also served on GitHub Pages from master) (HTML/CSS/JS) driving the engine over WASM.
 - `modern.bas` — the original program being reimplemented.
